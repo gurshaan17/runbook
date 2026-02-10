@@ -1,19 +1,21 @@
-export enum AnomalyType {
-  MEMORY_SPIKE = 'MEMORY_SPIKE',
-  HIGH_ERROR_RATE = 'HIGH_ERROR_RATE',
-  CPU_OVERLOAD = 'CPU_OVERLOAD',
-}
+import { AnomalyType, Severity } from './enums'
+import { ContainerMetrics } from './docker'
 
 export interface Threshold {
-  metric: string
-  value: number
-  duration: number
+  metric: string       // 'cpu' | 'memory' | 'errorRate'
+  operator: '>' | '<' | '>=' | '<='
+  value: number        // The threshold value
+  durationSeconds: number  // How long it must exceed
 }
 
 export interface AnomalyAlert {
   type: AnomalyType
-  severity: string
-  container: string
-  metrics: Threshold[]
+  severity: Severity
+  containerId: string
+  containerName: string
+  currentMetrics: ContainerMetrics
+  threshold: Threshold
+  message: string      // Human-readable description
   timestamp: string
+  context?: Record<string, unknown>  // Additional context
 }
