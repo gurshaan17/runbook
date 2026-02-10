@@ -1,9 +1,12 @@
 import express, { Request, Response, NextFunction, Express } from 'express'
-import { register, collectDefaultMetrics, Counter, Histogram, Gauge } from 'prom-client'
+import { collectDefaultMetrics, Counter, Histogram, Gauge } from 'prom-client'
 import { logger } from './utils/logger'
 import { MemoryLeakBug } from './bugs/memory-leak'
 import { ErrorSpamBug } from './bugs/error-spam'
 import { CpuSpikeBug } from './bugs/cpu-spike'
+import { createHealthRouter } from './routes/health'
+import { createMetricsRouter } from './routes/metrics'
+import { createTriggerRouter } from './routes/trigger'
 
 const app: Express = express()
 const PORT = process.env.PORT || 3000
@@ -94,124 +97,21 @@ app.use((req: Request, res: Response, next: NextFunction) => {
 
 // ==================== ROUTES ====================
 
-// Health check endpoint
-// @ts-ignore
-app.get('/health', (req: Request, res: Response) => {
-    const health = {
-        status: 'healthy',
-        timestamp: new Date().toISOString(),
-        uptime: process.uptime(),
-        memory: {
-            heapUsed: `${(process.memoryUsage().heapUsed / 1024 / 1024).toFixed(2)} MB`,
-            heapTotal: `${(process.memoryUsage().heapTotal / 1024 / 1024).toFixed(2)} MB`,
-            external: `${(process.memoryUsage().external / 1024 / 1024).toFixed(2)} MB`,
-        },
-        bugs: {
-            memoryLeak: memoryLeakBug.isActive(),
-            errorSpam: errorSpamBug.isActive(),
-            cpuSpike: cpuSpikeBug.isActive(),
-        },
-    }
-
-    logger.info('Health check requested', health)
-    res.json(health)
-})
-
-// Prometheus metrics endpoint
-//@ts-ignore
-app.get('/metrics', async (req: Request, res: Response) => {
-    res.set('Content-Type', register.contentType)
-    res.end(await register.metrics())
-})
-
-// ==================== TRIGGER ENDPOINTS ====================
-
-// Trigger memory leak
-app.post('/trigger/memory-leak', (req: Request, res: Response) => {
-    const action = req.body.action || 'start'
-
-    if (action === 'start') {
-        memoryLeakBug.start()
-        logger.warn('Memory leak started', {
-            currentMemory: `${(process.memoryUsage().heapUsed / 1024 / 1024).toFixed(2)} MB`,
-        })
-        res.json({
-            success: true,
-            message: 'Memory leak started - growing at 10MB every 10 seconds',
-            currentMemory: process.memoryUsage().heapUsed,
-        })
-    } else if (action === 'stop') {
-        memoryLeakBug.stop()
-        logger.info('Memory leak stopped')
-        res.json({
-            success: true,
-            message: 'Memory leak stopped',
-            leakedSize: memoryLeakBug.getLeakedSize(),
-        })
-    } else {
-        res.status(400).json({
-            success: false,
-            message: 'Invalid action. Use "start" or "stop"',
-        })
-    }
-})
-
-// Trigger error spam
-app.post('/trigger/error-spam', (req: Request, res: Response) => {
-    const action = req.body.action || 'start'
-    const errorRate = req.body.errorRate || 50 // percentage
-
-    if (action === 'start') {
-        errorSpamBug.start(errorRate)
-        logger.warn('Error spam started', { errorRate: `${errorRate}%` })
-        res.json({
-            success: true,
-            message: `Error spam started - ${errorRate}% of /api/data requests will fail`,
-            errorRate,
-        })
-    } else if (action === 'stop') {
-        errorSpamBug.stop()
-        logger.info('Error spam stopped')
-        res.json({
-            success: true,
-            message: 'Error spam stopped',
-            totalErrors: errorSpamBug.getTotalErrors(),
-        })
-    } else {
-        res.status(400).json({
-            success: false,
-            message: 'Invalid action. Use "start" or "stop"',
-        })
-    }
-})
-
-// Trigger CPU spike
-app.post('/trigger/cpu-spike', (req: Request, res: Response) => {
-    const action = req.body.action || 'start'
-    const duration = req.body.duration || 30 // seconds
-
-    if (action === 'start') {
-        cpuSpikeBug.start(duration)
-        logger.warn('CPU spike started', { duration: `${duration}s` })
-        res.json({
-            success: true,
-            message: `CPU spike started for ${duration} seconds`,
-            duration,
-        })
-    } else if (action === 'stop') {
-        cpuSpikeBug.stop()
-        logger.info('CPU spike stopped')
-        res.json({
-            success: true,
-            message: 'CPU spike stopped',
-        })
-    } else {
-        res.status(400).json({
-            success: false,
-            message: 'Invalid action. Use "start" or "stop"',
-        })
-    }
-})
+app.use(
+    createHealthRouter({
+        memoryLeakBug,
+        errorSpamBug,
+        cpuSpikeBug,
+    })
+)
+app.use(createMetricsRouter())
+app.use(
+    createTriggerRouter({
+        memoryLeakBug,
+        errorSpamBug,
+        cpuSpikeBug,
+    })
+)
 
 // ==================== APPLICATION ENDPOINTS ====================
 
