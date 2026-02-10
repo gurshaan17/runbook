@@ -113,10 +113,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   try {
     switch (name) {
       case 'get-container-logs': {
+        if (!args || typeof args.containerId !== 'string') {
+          throw new Error('Missing required argument: containerId')
+        }
         const result = await getContainerLogs(
-          args.containerId as string,
-          args.lines as number | undefined,
-          args.level as string | undefined
+          args.containerId,
+          typeof args.lines === 'number' ? args.lines : undefined,
+          typeof args.level === 'string' ? args.level : undefined
         )
         return {
           content: [
@@ -129,7 +132,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case 'get-container-metrics': {
-        const result = await getContainerMetrics(args.containerId as string)
+        if (!args || typeof args.containerId !== 'string') {
+          throw new Error('Missing required argument: containerId')
+        }
+        const result = await getContainerMetrics(args.containerId)
         return {
           content: [
             {
@@ -141,7 +147,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case 'detect-anomaly': {
-        const result = await detectAnomaly(args.containerId as string)
+        if (!args || typeof args.containerId !== 'string') {
+          throw new Error('Missing required argument: containerId')
+        }
+        const result = await detectAnomaly(args.containerId)
         return {
           content: [
             {
@@ -153,7 +162,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case 'get-runbook': {
-        const result = await getRunbook(args.anomalyType as string)
+        if (!args || typeof args.anomalyType !== 'string') {
+          throw new Error('Missing required argument: anomalyType')
+        }
+        const result = await getRunbook(args.anomalyType)
         return {
           content: [
             {
