@@ -4,7 +4,7 @@ set -e
 echo "🧹 Cleaning project..."
 
 # Clean all packages
-pnpm clean
+pnpm clean --if-present
 
 # Remove pnpm lock and node_modules
 rm -rf node_modules pnpm-lock.yaml

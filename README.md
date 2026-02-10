@@ -23,7 +23,7 @@ Archestra Platform
 ### Installation
 ```bash
 # Clone repository
-git clone <your-repo>
+git clone https://github.com/gurshaan17/runbook.git
 cd runbook
 
 # Run setup
