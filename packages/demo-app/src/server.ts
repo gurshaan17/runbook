@@ -127,7 +127,7 @@ app.get('/api/data', (req: Request, res: Response) => {
             stack: error.stack,
         })
 
-        errorRateGauge.inc()
+        errorRateGauge.set(errorSpamBug.getCurrentErrorRate())
 
         res.status(500).json({
             success: false,

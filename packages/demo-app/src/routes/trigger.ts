@@ -52,10 +52,43 @@ export const createTriggerRouter = ({
 
   router.post('/trigger/error-spam', (req: Request, res: Response) => {
     const action = req.body.action || 'start'
-    const errorRate = req.body.errorRate || 50
 
     if (action === 'start') {
-      errorSpamBug.start(errorRate)
+      const rawErrorRate = req.body.errorRate
+      const errorRate = rawErrorRate === undefined ? 50 : Number(rawErrorRate)
+
+      if (!Number.isFinite(errorRate) || errorRate < 0 || errorRate > 100) {
+        res.status(400).json({
+          success: false,
+          message: 'Invalid errorRate. Provide a number between 0 and 100.',
+        })
+        return
+      }
+
+      try {
+        errorSpamBug.start(errorRate)
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error'
+
+        if (errorMessage === 'Error rate must be between 0 and 100') {
+          res.status(400).json({
+            success: false,
+            message: errorMessage,
+          })
+          return
+        }
+
+        logger.error('Failed to start error spam', {
+          error: errorMessage,
+          stack: error instanceof Error ? error.stack : undefined,
+        })
+        res.status(500).json({
+          success: false,
+          message: 'Failed to start error spam',
+        })
+        return
+      }
+
       logger.warn('Error spam started', { errorRate: `${errorRate}%` })
       res.json({
         success: true,

@@ -46,8 +46,16 @@ RUN pnpm install --prod --frozen-lockfile
 COPY --from=builder /app/packages/demo-app/dist ./packages/demo-app/dist
 COPY --from=builder /app/packages/shared-types ./packages/shared-types
 
+# Create non-root user/group and ensure app files are owned by it
+RUN addgroup -S appuser && adduser -S appuser -G appuser \
+  && mkdir -p /app/tmp /app/logs \
+  && chown -R appuser:appuser /app
+
 # Expose app port
 EXPOSE 3000
+
+# Run as non-root user
+USER appuser
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
