@@ -1,7 +1,12 @@
-export interface ToolResult<T> {
+export interface ToolResult<T = unknown> {
   success: boolean
   data?: T
-  error?: string
+  error?: {
+    code: string
+    message: string
+    details?: Record<string, unknown>
+  }
+  timestamp: string
 }
 
 export interface DockerListContainersInput {
