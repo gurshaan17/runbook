@@ -4,10 +4,29 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "dev": "pnpm --parallel --stream dev",
+    "build": "pnpm --recursive --stream build",
+    "clean": "pnpm --recursive exec rm -rf dist node_modules && rm -rf node_modules",
+    "lint": "pnpm --recursive --stream lint",
+    "type-check": "pnpm --recursive --stream type-check",
+    "setup": "pnpm install && pnpm build:types",
+    "build:types": "pnpm --filter shared-types build"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "packageManager": "pnpm@10.14.0"
+  "packageManager": "pnpm@10.29.2",
+  "devDependencies": {
+    "@types/node": "^20.19.33",
+    "@typescript-eslint/eslint-plugin": "^6.21.0",
+    "@typescript-eslint/parser": "^6.21.0",
+    "concurrently": "^8.2.2",
+    "eslint": "^8.57.1",
+    "prettier": "^3.8.1",
+    "typescript": "^5.9.3"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "pnpm": ">=8.0.0"
+  }
 }
