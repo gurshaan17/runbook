@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express'
-import { logger } from '../utils/logger'
+import { logger } from '../utils/logger.js'
 import { MemoryLeakBug } from '../bugs/memory-leak'
 import { ErrorSpamBug } from '../bugs/error-spam'
 import { CpuSpikeBug } from '../bugs/cpu-spike'

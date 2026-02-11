@@ -1,12 +1,12 @@
 import express, { Request, Response, NextFunction, Express } from 'express'
 import { collectDefaultMetrics, Counter, Histogram, Gauge } from 'prom-client'
-import { logger } from './utils/logger'
-import { MemoryLeakBug } from './bugs/memory-leak'
-import { ErrorSpamBug } from './bugs/error-spam'
-import { CpuSpikeBug } from './bugs/cpu-spike'
-import { createHealthRouter } from './routes/health'
-import { createMetricsRouter } from './routes/metrics'
-import { createTriggerRouter } from './routes/trigger'
+import { logger } from './utils/logger.js'
+import { MemoryLeakBug } from './bugs/memory-leak.js'
+import { ErrorSpamBug } from './bugs/error-spam.js'
+import { CpuSpikeBug } from './bugs/cpu-spike.js'
+import { createHealthRouter } from './routes/health.js'
+import { createMetricsRouter } from './routes/metrics.js'
+import { createTriggerRouter } from './routes/trigger.js'
 
 const app: Express = express()
 const PORT = process.env.PORT || 3000
