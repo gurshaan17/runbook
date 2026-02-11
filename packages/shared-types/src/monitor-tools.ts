@@ -1,6 +1,6 @@
-import { ContainerLog, ContainerMetrics } from './docker'
-import { AnomalyAlert } from './anomaly'
-import { Runbook } from './runbook'
+import { ContainerLog, ContainerMetrics } from './docker.js'
+import { AnomalyAlert } from './anomaly.js'
+import { Runbook } from './runbook.js'
 
 // List Containers
 export interface ListContainersInput {

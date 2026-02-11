@@ -10,8 +10,8 @@
     "start": "node dist/server.js",
     "clean": "rm -rf dist",
     "type-check": "tsc --noEmit",
-    "docker:build": "docker build -t demo-app .",
-    "docker:run": "docker run -p 3000:3000 demo-app"
+    "docker:build": "cd ../.. && docker build -t demo-app -f packages/demo-app/Dockerfile .",
+    "docker:run": "docker run -d --name demo-app -p 3001:3001 demo-app"
   },
   "dependencies": {
     "@runbook/shared-types": "workspace:*",

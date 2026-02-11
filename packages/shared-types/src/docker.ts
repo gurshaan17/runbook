@@ -1,4 +1,4 @@
-import { ContainerState, LogLevel } from './enums'
+import { ContainerState, LogLevel } from './enums.js'
 
 export interface ContainerMetrics {
   cpu: number          // Percentage (0-100)
