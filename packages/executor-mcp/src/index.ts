@@ -130,7 +130,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params
 
-  logger.info('Tool called', { tool: name, arguments: args })
+  const sanitizedArgs =
+    name === 'update-env-vars' && args && typeof args === 'object'
+      ? { ...args, envVars: Object.keys((args as any).envVars ?? {}) }
+      : args
+  logger.info('Tool called', { tool: name, arguments: sanitizedArgs })
 
   try {
     switch (name) {
@@ -156,9 +160,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (
           !args ||
           typeof args.serviceName !== 'string' ||
-          typeof args.replicas !== 'number'
+          typeof args.replicas !== 'number' ||
+          !Number.isInteger(args.replicas)
         ) {
-          throw new Error('Missing required arguments: serviceName, replicas')
+          throw new Error('Missing required arguments: serviceName, replicas (integer)')
         }
         const result = await scaleService(
           args.serviceName,

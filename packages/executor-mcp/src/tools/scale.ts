@@ -66,16 +66,27 @@ export async function scaleService(
       // Scale up: start stopped containers or create new ones
       const stoppedContainers = serviceContainers.filter((c) => c.State !== 'running')
       const containersToStart = Math.min(replicas - previousReplicas, stoppedContainers.length)
+      let startedCount = 0
 
       for (let i = 0; i < containersToStart; i++) {
-        const container = docker.getContainer(stoppedContainers[i].Id)
-        await container.start()
-        logger.info('Started container', { containerId: stoppedContainers[i].Id })
+        const containerId = stoppedContainers[i].Id
+        const container = docker.getContainer(containerId)
+        try {
+          await container.start()
+          startedCount++
+          logger.info('Started container', { containerId })
+        } catch (error) {
+          const errorMessage = error instanceof Error ? error.message : 'Unknown error'
+          logger.error('Failed to start container during scale-up', {
+            containerId,
+            error: errorMessage,
+          })
+        }
       }
 
       // If we still need more, we'd need to create new containers
       // For simplicity, we'll just report what we could do
-      const actualReplicas = previousReplicas + containersToStart
+      const actualReplicas = previousReplicas + startedCount
 
       return {
         success: true,
@@ -89,20 +100,33 @@ export async function scaleService(
       // Scale down: stop excess containers
       const runningContainers = serviceContainers.filter((c) => c.State === 'running')
       const containersToStop = previousReplicas - replicas
+      let stoppedCount = 0
 
       for (let i = 0; i < containersToStop; i++) {
-        const container = docker.getContainer(runningContainers[i].Id)
-        await container.stop()
-        logger.info('Stopped container', { containerId: runningContainers[i].Id })
+        const containerId = runningContainers[i].Id
+        const container = docker.getContainer(containerId)
+        try {
+          await container.stop()
+          stoppedCount++
+          logger.info('Stopped container', { containerId })
+        } catch (error) {
+          const errorMessage = error instanceof Error ? error.message : 'Unknown error'
+          logger.error('Failed to stop container during scale-down', {
+            containerId,
+            error: errorMessage,
+          })
+        }
       }
+
+      const actualReplicas = previousReplicas - stoppedCount
 
       return {
         success: true,
         serviceName,
         previousReplicas,
-        newReplicas: replicas,
+        newReplicas: actualReplicas,
         timestamp: new Date().toISOString(),
-        message: `Scaled ${serviceName} from ${previousReplicas} to ${replicas} replicas`,
+        message: `Scaled ${serviceName} from ${previousReplicas} to ${actualReplicas} replicas`,
       }
     } else {
       // No change needed

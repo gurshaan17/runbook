@@ -3,6 +3,10 @@ import { validateAction } from '../safety/validator.js'
 import { RestartContainerOutput } from '@runbook/shared-types'
 import { logger } from '../utils/logger.js'
 
+const RESTART_TIMEOUT_SECONDS = Number(process.env.RESTART_TIMEOUT_SECONDS || 10)
+const RESTART_READY_TIMEOUT_MS = Number(process.env.RESTART_READY_TIMEOUT_MS || 15000)
+const RESTART_POLL_INTERVAL_MS = Number(process.env.RESTART_POLL_INTERVAL_MS || 500)
+
 export async function restartContainer(
   containerId: string,
   reason?: string
@@ -43,14 +47,26 @@ export async function restartContainer(
       previousState,
     })
 
-    // Restart the container
-    await container.restart()
+    // Bound restart call with Docker's timeout option.
+    await container.restart({ t: RESTART_TIMEOUT_SECONDS })
 
-    // Wait a moment for restart to complete
-    await new Promise((resolve) => setTimeout(resolve, 2000))
+    // Poll container state until it is running or timeout elapses.
+    const deadline = Date.now() + RESTART_READY_TIMEOUT_MS
+    let newInfo = await container.inspect()
+    while (
+      !(newInfo.State.Running || newInfo.State.Status === 'running') &&
+      Date.now() < deadline
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, RESTART_POLL_INTERVAL_MS))
+      newInfo = await container.inspect()
+    }
 
-    // Get new state
-    const newInfo = await container.inspect()
+    if (!(newInfo.State.Running || newInfo.State.Status === 'running')) {
+      throw new Error(
+        `Container did not reach running state within ${RESTART_READY_TIMEOUT_MS}ms after restart`
+      )
+    }
+
     const newState = newInfo.State.Status
 
     logger.info('Container restarted successfully', {

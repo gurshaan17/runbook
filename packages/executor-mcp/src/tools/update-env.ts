@@ -82,15 +82,67 @@ export async function updateEnvVars(
       updatedVars,
     })
 
-    // Note: Docker doesn't allow updating env vars on running containers
-    // We need to recreate the container or restart it
-    // For safety, we'll just log this and require manual restart or use docker-compose
-
     let restarted = false
     if (restart) {
-      await container.restart()
-      restarted = true
-      logger.info('Container restarted with new env vars', { containerId })
+      const containerName = info.Name?.replace(/^\//, '') || undefined
+
+      try {
+        const createOptions = {
+          Image: info.Config.Image,
+          Cmd: info.Config.Cmd,
+          Entrypoint: info.Config.Entrypoint,
+          Env: newEnv,
+          WorkingDir: info.Config.WorkingDir,
+          User: info.Config.User,
+          Labels: info.Config.Labels,
+          ExposedPorts: info.Config.ExposedPorts,
+          HostConfig: info.HostConfig,
+        }
+
+        if (info.State?.Running) {
+          await container.stop({ t: 10 })
+        }
+        await container.remove()
+
+        const newContainer = await docker.createContainer(
+          containerName ? { ...createOptions, name: containerName } : createOptions
+        )
+        await newContainer.start()
+
+        restarted = true
+        const newContainerId = newContainer.id
+        logger.info('Container replaced to apply env vars', {
+          previousContainerId: containerId,
+          newContainerId,
+          containerName,
+          updatedVars,
+        })
+
+        return {
+          success: true,
+          containerId: newContainerId,
+          updatedVars,
+          restarted,
+          timestamp: new Date().toISOString(),
+          message: `Updated environment variables: ${updatedVars.join(', ')}. Recreated container to apply changes.`,
+        }
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error'
+        logger.error('Failed to recreate container for env update', {
+          containerId,
+          error: errorMessage,
+          updatedVars,
+        })
+
+        return {
+          success: false,
+          containerId,
+          updatedVars,
+          restarted: false,
+          timestamp: new Date().toISOString(),
+          message: `Environment variables prepared (${updatedVars.join(', ')}) but not applied. Automatic recreation failed: ${errorMessage}. Manual container recreation/restart is required.`,
+        }
+      }
     }
 
     return {
@@ -99,9 +151,7 @@ export async function updateEnvVars(
       updatedVars,
       restarted,
       timestamp: new Date().toISOString(),
-      message: `Updated environment variables: ${updatedVars.join(', ')}. ${
-        restart ? 'Container restarted.' : 'Restart required for changes to take effect.'
-      }`,
+      message: `Environment variables prepared (${updatedVars.join(', ')}), but not applied yet. Re-run with restart=true or manually recreate/restart the container.`,
     }
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error'
