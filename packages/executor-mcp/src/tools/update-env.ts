@@ -13,7 +13,7 @@ export async function updateEnvVars(
   try {
     logger.info('Attempting to update environment variables', {
       containerId,
-      envVars,
+      envVarKeys: Object.keys(envVars || {}),
       restart,
       reason,
     })
@@ -84,7 +84,22 @@ export async function updateEnvVars(
 
     let restarted = false
     if (restart) {
-      const containerName = info.Name?.replace(/^\//, '') || undefined
+      const containerName = info.Name?.replace(/^\//, '')
+      if (!containerName) {
+        return {
+          success: false,
+          containerId,
+          updatedVars,
+          restarted: false,
+          timestamp: new Date().toISOString(),
+          message: `Environment variables prepared (${updatedVars.join(', ')}) but not applied. Container name is unavailable, so automatic recreation is not possible. Manual recreation/restart is required.`,
+        }
+      }
+
+      const wasRunning = Boolean(info.State?.Running)
+      const oldContainerTempName = `${containerName}-old-${Date.now()}`
+      let oldContainerRenamed = false
+      let newContainer: Awaited<ReturnType<typeof docker.createContainer>> | null = null
 
       try {
         const createOptions = {
@@ -97,17 +112,21 @@ export async function updateEnvVars(
           Labels: info.Config.Labels,
           ExposedPorts: info.Config.ExposedPorts,
           HostConfig: info.HostConfig,
+          name: containerName,
         }
 
-        if (info.State?.Running) {
+        if (wasRunning) {
           await container.stop({ t: 10 })
         }
-        await container.remove()
 
-        const newContainer = await docker.createContainer(
-          containerName ? { ...createOptions, name: containerName } : createOptions
-        )
+        await container.rename({ name: oldContainerTempName })
+        oldContainerRenamed = true
+
+        newContainer = await docker.createContainer(createOptions)
         await newContainer.start()
+
+        // New container is healthy enough to start; now remove the old one.
+        await container.remove()
 
         restarted = true
         const newContainerId = newContainer.id
@@ -128,6 +147,40 @@ export async function updateEnvVars(
         }
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : 'Unknown error'
+
+        if (newContainer) {
+          try {
+            await newContainer.remove({ force: true })
+          } catch (cleanupError) {
+            logger.error('Failed to clean up replacement container after env update failure', {
+              containerId,
+              error: cleanupError instanceof Error ? cleanupError.message : 'Unknown error',
+            })
+          }
+        }
+
+        if (oldContainerRenamed) {
+          try {
+            await container.rename({ name: containerName })
+          } catch (revertError) {
+            logger.error('Failed to rename old container back after env update failure', {
+              containerId,
+              error: revertError instanceof Error ? revertError.message : 'Unknown error',
+            })
+          }
+        }
+
+        if (wasRunning) {
+          try {
+            await container.start()
+          } catch (restartError) {
+            logger.error('Failed to restart old container after env update failure', {
+              containerId,
+              error: restartError instanceof Error ? restartError.message : 'Unknown error',
+            })
+          }
+        }
+
         logger.error('Failed to recreate container for env update', {
           containerId,
           error: errorMessage,
@@ -140,7 +193,7 @@ export async function updateEnvVars(
           updatedVars,
           restarted: false,
           timestamp: new Date().toISOString(),
-          message: `Environment variables prepared (${updatedVars.join(', ')}) but not applied. Automatic recreation failed: ${errorMessage}. Manual container recreation/restart is required.`,
+          message: `Environment variables prepared (${updatedVars.join(', ')}) but not applied. Automatic recreation failed: ${errorMessage}. Manual intervention may be required.`,
         }
       }
     }
