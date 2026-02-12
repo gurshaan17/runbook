@@ -1,5 +1,5 @@
-import { ExecutionStatus, AnomalyType } from './enums'
-import { AnomalyAlert } from './anomaly'
+import { ExecutionStatus, AnomalyType } from './enums.js'
+import { AnomalyAlert } from './anomaly.js'
 
 export interface RunbookStep {
   stepNumber: number

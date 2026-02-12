@@ -8,6 +8,7 @@ RUN npm install -g pnpm
 
 # Copy workspace files first (important for caching)
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY tsconfig.json ./
 
 # Copy package manifests
 COPY packages/demo-app/package.json ./packages/demo-app/
@@ -52,14 +53,14 @@ RUN addgroup -S appuser && adduser -S appuser -G appuser \
   && chown -R appuser:appuser /app
 
 # Expose app port
-EXPOSE 3000
+EXPOSE 3001
 
 # Run as non-root user
 USER appuser
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-  CMD node -e "require('http').get('http://localhost:3000/health', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"
+  CMD node -e "require('http').get('http://localhost:3001/health', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"
 
 # Run app
 CMD ["node", "packages/demo-app/dist/server.js"]

@@ -1,5 +1,5 @@
-import { AnomalyType, Severity } from './enums'
-import { ContainerMetrics } from './docker'
+import { AnomalyType, Severity } from './enums.js'
+import { ContainerMetrics } from './docker.js'
 
 export interface Threshold {
   metric: string       // 'cpu' | 'memory' | 'errorRate'
