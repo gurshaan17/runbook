@@ -109,48 +109,56 @@ export async function detectAnomaly(
 
     // Check for high error rate
     const logsResult = await getContainerLogs(containerId, 100, 'ERROR')
+    const totalLogsResult = await getContainerLogs(containerId, 100)
     checksPerformed.push('error-logs')
 
-    if (logsResult.success) {
+    if (logsResult.success && totalLogsResult.success) {
       const errorCount = logsResult.logs.length
-      const totalLogs = 100 // We fetched last 100 logs
-      const errorRate = (errorCount / totalLogs) * 100
+      const totalLogsFetched = totalLogsResult.logs.length
 
-      if (errorRate > THRESHOLDS.ERROR_RATE_PERCENT) {
-        logger.warn('High error rate detected', {
+      if (totalLogsFetched === 0) {
+        logger.info('Skipped error-rate check due to empty log window', {
           containerId,
-          errorRate,
-          threshold: THRESHOLDS.ERROR_RATE_PERCENT,
         })
+      } else {
+        const errorRate = (errorCount / totalLogsFetched) * 100
 
-        const threshold: Threshold = {
-          metric: 'errorRate',
-          operator: '>',
-          value: THRESHOLDS.ERROR_RATE_PERCENT,
-          durationSeconds: 60,
-        }
+        if (errorRate > THRESHOLDS.ERROR_RATE_PERCENT) {
+          logger.warn('High error rate detected', {
+            containerId,
+            errorRate,
+            threshold: THRESHOLDS.ERROR_RATE_PERCENT,
+          })
 
-        const anomaly: AnomalyAlert = {
-          type: AnomalyType.HIGH_ERROR_RATE,
-          severity: errorRate > 20 ? Severity.CRITICAL : Severity.HIGH,
-          containerId,
-          containerName: containerName || containerId,
-          currentMetrics: metrics,
-          threshold,
-          message: `Error rate at ${errorRate.toFixed(2)}% exceeds threshold of ${THRESHOLDS.ERROR_RATE_PERCENT}%`,
-          timestamp,
-          context: {
-            errorCount,
-            totalLogs,
-            recentErrors: logsResult.logs.slice(0, 5).map(log => log.message),
-          },
-        }
+          const threshold: Threshold = {
+            metric: 'errorRate',
+            operator: '>',
+            value: THRESHOLDS.ERROR_RATE_PERCENT,
+            durationSeconds: 60,
+          }
 
-        return {
-          success: true,
-          anomaly,
-          checksPerformed,
-          timestamp,
+          const anomaly: AnomalyAlert = {
+            type: AnomalyType.HIGH_ERROR_RATE,
+            severity: errorRate > 20 ? Severity.CRITICAL : Severity.HIGH,
+            containerId,
+            containerName: containerName || containerId,
+            currentMetrics: metrics,
+            threshold,
+            message: `Error rate at ${errorRate.toFixed(2)}% exceeds threshold of ${THRESHOLDS.ERROR_RATE_PERCENT}%`,
+            timestamp,
+            context: {
+              errorCount,
+              totalLogs: totalLogsFetched,
+              recentErrors: logsResult.logs.slice(0, 5).map(log => log.message),
+            },
+          }
+
+          return {
+            success: true,
+            anomaly,
+            checksPerformed,
+            timestamp,
+          }
         }
       }
     }

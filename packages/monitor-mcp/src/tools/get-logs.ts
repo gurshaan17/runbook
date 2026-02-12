@@ -33,13 +33,39 @@ export async function getContainerLogs(
       tail: lines,
     })
 
-    // Parse logs
-    const logLines = logStream.toString('utf8').split('\n').filter(line => line.trim())
+    // Parse logs as buffers to avoid corrupting Docker's binary multiplex header.
+    const rawLogBuffer = Buffer.isBuffer(logStream)
+      ? logStream
+      : Buffer.from(
+          typeof logStream === 'string' ? logStream : String(logStream),
+          'utf8'
+        )
+    const logLines = splitBufferByNewline(rawLogBuffer).filter(line => line.length > 0)
     const parsedLogs: ContainerLog[] = []
 
     for (const line of logLines) {
-      // Remove Docker header (8 bytes)
-      const cleanLine = line.slice(8)
+      let payloadBuffer: Buffer
+      const hasDockerMuxHeader =
+        line.length >= 8 &&
+        (line[0] === 0 || line[0] === 1) &&
+        line[1] === 0 &&
+        line[2] === 0 &&
+        line[3] === 0
+
+      if (hasDockerMuxHeader) {
+        const payloadLength = line.readUInt32BE(4)
+        payloadBuffer =
+          payloadLength > 0 && line.length >= 8 + payloadLength
+            ? line.slice(8, 8 + payloadLength)
+            : line.slice(8)
+      } else {
+        payloadBuffer = line
+      }
+
+      const cleanLine = payloadBuffer.toString('utf8').trim()
+      if (!cleanLine) {
+        continue
+      }
       
       // Try to parse structured logs
       const parsed = parseLogLine(cleanLine)
@@ -73,6 +99,24 @@ export async function getContainerLogs(
       error: errorMessage,
     }
   }
+}
+
+function splitBufferByNewline(buffer: Buffer): Buffer[] {
+  const lines: Buffer[] = []
+  let start = 0
+
+  for (let i = 0; i < buffer.length; i++) {
+    if (buffer[i] === 0x0a) {
+      lines.push(buffer.slice(start, i))
+      start = i + 1
+    }
+  }
+
+  if (start < buffer.length) {
+    lines.push(buffer.slice(start))
+  }
+
+  return lines
 }
 
 function parseLogLine(line: string): ContainerLog {
