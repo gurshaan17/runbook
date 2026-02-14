@@ -36,3 +36,5 @@ Thumbs.db
 .turbo/
 coverage/
 .nyc_output/
+
+.agents/
