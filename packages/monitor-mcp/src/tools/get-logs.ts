@@ -1,5 +1,11 @@
-import { getDockerClient } from '../docker/watcher.js'
+import { V1Pod } from '@kubernetes/client-node'
 import { ContainerLog, LogLevel } from '@runbook/shared-types'
+import {
+  coreApi,
+  DEFAULT_NAMESPACE,
+  getPrimaryContainerName,
+  listDemoAppPods,
+} from '../k8s/client.js'
 import { logger } from '../utils/logger.js'
 
 export async function getContainerLogs(
@@ -15,78 +21,54 @@ export async function getContainerLogs(
   try {
     logger.info('Fetching container logs', { containerId, lines, levelFilter })
 
-    const docker = getDockerClient()
-    const container = docker.getContainer(containerId)
+    const pods = await listDemoAppPods()
+    const targetPods = selectPods(pods, containerId)
 
-    // Check if container exists
-    try {
-      await container.inspect()
-    } catch (error) {
-      throw new Error(`Container not found: ${containerId}`)
+    if (targetPods.length === 0) {
+      throw new Error(`No pods found for selector app=demo-app (containerId=${containerId})`)
     }
 
-    // Fetch logs
-    const logStream = await container.logs({
-      stdout: true,
-      stderr: true,
-      timestamps: true,
-      tail: lines,
-    })
-
-    // Parse logs as buffers to avoid corrupting Docker's binary multiplex header.
-    const rawLogBuffer = Buffer.isBuffer(logStream)
-      ? logStream
-      : Buffer.from(
-          typeof logStream === 'string' ? logStream : String(logStream),
-          'utf8'
-        )
-    const logLines = splitBufferByNewline(rawLogBuffer).filter(line => line.length > 0)
+    const normalizedFilter = levelFilter.toUpperCase()
     const parsedLogs: ContainerLog[] = []
 
-    for (const line of logLines) {
-      let payloadBuffer: Buffer
-      const hasDockerMuxHeader =
-        line.length >= 8 &&
-        (line[0] === 0 || line[0] === 1) &&
-        line[1] === 0 &&
-        line[2] === 0 &&
-        line[3] === 0
-
-      if (hasDockerMuxHeader) {
-        const payloadLength = line.readUInt32BE(4)
-        payloadBuffer =
-          payloadLength > 0 && line.length >= 8 + payloadLength
-            ? line.slice(8, 8 + payloadLength)
-            : line.slice(8)
-      } else {
-        payloadBuffer = line
-      }
-
-      const cleanLine = payloadBuffer.toString('utf8').trim()
-      if (!cleanLine) {
+    for (const pod of targetPods) {
+      const podName = pod.metadata?.name
+      if (!podName) {
         continue
       }
-      
-      // Try to parse structured logs
-      const parsed = parseLogLine(cleanLine)
-      
-      // Apply level filter
-      if (levelFilter !== 'ALL' && parsed.level !== levelFilter) {
-        continue
+
+      const rawLogs = await readPodLog(podName, lines)
+      for (const line of rawLogs.split('\n')) {
+        const cleanLine = line.trim()
+        if (!cleanLine) {
+          continue
+        }
+
+        const parsed = parseLogLine(cleanLine)
+
+        if (normalizedFilter !== 'ALL' && parsed.level !== normalizedFilter) {
+          continue
+        }
+
+        parsed.containerId = podName
+        parsed.containerName = getPrimaryContainerName(pod)
+        parsedLogs.push(parsed)
       }
-      
-      parsedLogs.push(parsed)
     }
+
+    parsedLogs.sort((a, b) => b.timestamp.localeCompare(a.timestamp))
+    const limitedLogs = parsedLogs.slice(0, lines)
 
     logger.info('Logs fetched successfully', {
       containerId,
-      totalLines: parsedLogs.length,
+      totalLines: limitedLogs.length,
+      podsQueried: targetPods.length,
     })
 
     return {
       success: true,
-      logs: parsedLogs,
-      totalLines: parsedLogs.length,
+      logs: limitedLogs,
+      totalLines: limitedLogs.length,
     }
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error'
@@ -101,30 +83,77 @@ export async function getContainerLogs(
   }
 }
 
-function splitBufferByNewline(buffer: Buffer): Buffer[] {
-  const lines: Buffer[] = []
-  let start = 0
+function selectPods(pods: V1Pod[], containerId: string): V1Pod[] {
+  if (pods.length === 0) {
+    return []
+  }
 
-  for (let i = 0; i < buffer.length; i++) {
-    if (buffer[i] === 0x0a) {
-      lines.push(buffer.slice(start, i))
-      start = i + 1
+  const normalized = containerId.trim()
+  if (!normalized || normalized === 'demo-app') {
+    return pods
+  }
+
+  const exactMatches = pods.filter((pod) => pod.metadata?.name === normalized)
+  if (exactMatches.length > 0) {
+    return exactMatches
+  }
+
+  const partialMatches = pods.filter((pod) => (pod.metadata?.name || '').includes(normalized))
+  if (partialMatches.length > 0) {
+    return partialMatches
+  }
+
+  return pods
+}
+
+async function readPodLog(podName: string, tailLines: number): Promise<string> {
+  const api = coreApi as any
+
+  try {
+    const response = await api.readNamespacedPodLog({
+      name: podName,
+      namespace: DEFAULT_NAMESPACE,
+      tailLines,
+      timestamps: true,
+    })
+    return extractLogBody(response)
+  } catch {
+    const response = await api.readNamespacedPodLog(
+      podName,
+      DEFAULT_NAMESPACE,
+      undefined,
+      false,
+      undefined,
+      undefined,
+      undefined,
+      false,
+      undefined,
+      tailLines,
+      true
+    )
+    return extractLogBody(response)
+  }
+}
+
+function extractLogBody(response: unknown): string {
+  if (typeof response === 'string') {
+    return response
+  }
+
+  if (response && typeof response === 'object') {
+    const body = (response as { body?: unknown }).body
+    if (typeof body === 'string') {
+      return body
     }
   }
 
-  if (start < buffer.length) {
-    lines.push(buffer.slice(start))
-  }
-
-  return lines
+  return ''
 }
 
 function parseLogLine(line: string): ContainerLog {
-  // Try to extract timestamp (format: 2024-01-15T10:30:45.123Z)
-  const timestampMatch = line.match(/^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z)/)
+  const timestampMatch = line.match(/^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z)/)
   const timestamp = timestampMatch ? timestampMatch[1] : new Date().toISOString()
 
-  // Try to detect log level
   let level: LogLevel = LogLevel.INFO
   const upperLine = line.toUpperCase()
 
@@ -140,7 +169,6 @@ function parseLogLine(line: string): ContainerLog {
     level = LogLevel.INFO
   }
 
-  // Clean message (remove timestamp if present)
   let message = line
   if (timestampMatch) {
     message = line.substring(timestampMatch[0].length).trim()
