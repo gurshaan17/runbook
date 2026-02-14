@@ -17,11 +17,10 @@
   "dependencies": {
     "@runbook/shared-types": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.0.4",
-    "dockerode": "^4.0.2",
+    "@kubernetes/client-node": "^0.22.3",
     "zod": "^3.22.4"
   },
   "devDependencies": {
-    "@types/dockerode": "^3.3.31",
     "@types/node": "^20.11.0",
     "tsx": "^4.7.0",
     "typescript": "^5.3.0"

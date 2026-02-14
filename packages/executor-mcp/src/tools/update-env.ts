@@ -1,7 +1,7 @@
-import { getDockerClient } from '../docker/client.js'
 import { validateAction } from '../safety/validator.js'
 import { ENV_VAR_WHITELIST } from '../safety/limits.js'
 import { UpdateEnvVarsOutput } from '@runbook/shared-types'
+import { DEMO_APP_DEPLOYMENT_NAME, patchDeployment, readDeployment } from '../k8s/client.js'
 import { logger } from '../utils/logger.js'
 
 export async function updateEnvVars(
@@ -18,7 +18,6 @@ export async function updateEnvVars(
       reason,
     })
 
-    // Validate environment variables against whitelist
     const invalidVars = Object.keys(envVars).filter((key) => !ENV_VAR_WHITELIST.includes(key))
 
     if (invalidVars.length > 0) {
@@ -35,7 +34,6 @@ export async function updateEnvVars(
       }
     }
 
-    // Validate action
     const validation = await validateAction('update-env', { containerId, envVars })
     if (!validation.allowed) {
       logger.warn('Update action blocked by safety validator', {
@@ -53,150 +51,70 @@ export async function updateEnvVars(
       }
     }
 
-    const docker = getDockerClient()
-    const container = docker.getContainer(containerId)
+    const deploymentName = DEMO_APP_DEPLOYMENT_NAME
+    const deployment = await readDeployment(deploymentName)
+    const containers = deployment.spec?.template?.spec?.containers || []
+    const targetContainer = containers[0]
 
-    // Get current container config
-    const info = await container.inspect()
-    const currentEnv = info.Config.Env || []
+    if (!targetContainer?.name) {
+      throw new Error(`Deployment ${deploymentName} has no containers to patch`)
+    }
 
-    // Update environment variables
-    const newEnv = [...currentEnv]
-    const updatedVars: string[] = []
+    const currentEnv = targetContainer.env || []
+    const currentEnvMap = new Map(currentEnv.map((envVar) => [envVar.name, envVar.value || '']))
+    const updatedVars = Object.keys(envVars)
 
+    let hasChanges = false
     for (const [key, value] of Object.entries(envVars)) {
-      const envString = `${key}=${value}`
-      const existingIndex = newEnv.findIndex((e) => e.startsWith(`${key}=`))
-
-      if (existingIndex >= 0) {
-        newEnv[existingIndex] = envString
-      } else {
-        newEnv.push(envString)
+      if ((currentEnvMap.get(key) || '') !== value) {
+        hasChanges = true
       }
-
-      updatedVars.push(key)
+      currentEnvMap.set(key, value)
     }
 
-    logger.info('Environment variables prepared', {
-      containerId,
-      updatedVars,
-    })
+    if (!hasChanges && !restart) {
+      return {
+        success: true,
+        containerId,
+        updatedVars,
+        restarted: false,
+        timestamp: new Date().toISOString(),
+        message: `No environment changes detected for ${updatedVars.join(', ')}`,
+      }
+    }
 
-    let restarted = false
+    const mergedEnv = Array.from(currentEnvMap.entries())
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([name, value]) => ({ name, value }))
+
+    const templatePatch: Record<string, unknown> = {
+      spec: {
+        containers: [
+          {
+            name: targetContainer.name,
+            env: mergedEnv,
+          },
+        ],
+      },
+    }
+
     if (restart) {
-      const containerName = info.Name?.replace(/^\//, '')
-      if (!containerName) {
-        return {
-          success: false,
-          containerId,
-          updatedVars,
-          restarted: false,
-          timestamp: new Date().toISOString(),
-          message: `Environment variables prepared (${updatedVars.join(', ')}) but not applied. Container name is unavailable, so automatic recreation is not possible. Manual recreation/restart is required.`,
-        }
-      }
-
-      const wasRunning = Boolean(info.State?.Running)
-      const oldContainerTempName = `${containerName}-old-${Date.now()}`
-      let oldContainerRenamed = false
-      let newContainer: Awaited<ReturnType<typeof docker.createContainer>> | null = null
-
-      try {
-        const createOptions = {
-          Image: info.Config.Image,
-          Cmd: info.Config.Cmd,
-          Entrypoint: info.Config.Entrypoint,
-          Env: newEnv,
-          WorkingDir: info.Config.WorkingDir,
-          User: info.Config.User,
-          Labels: info.Config.Labels,
-          ExposedPorts: info.Config.ExposedPorts,
-          HostConfig: info.HostConfig,
-          name: containerName,
-        }
-
-        if (wasRunning) {
-          await container.stop({ t: 10 })
-        }
-
-        await container.rename({ name: oldContainerTempName })
-        oldContainerRenamed = true
-
-        newContainer = await docker.createContainer(createOptions)
-        await newContainer.start()
-
-        // New container is healthy enough to start; now remove the old one.
-        await container.remove()
-
-        restarted = true
-        const newContainerId = newContainer.id
-        logger.info('Container replaced to apply env vars', {
-          previousContainerId: containerId,
-          newContainerId,
-          containerName,
-          updatedVars,
-        })
-
-        return {
-          success: true,
-          containerId: newContainerId,
-          updatedVars,
-          restarted,
-          timestamp: new Date().toISOString(),
-          message: `Updated environment variables: ${updatedVars.join(', ')}. Recreated container to apply changes.`,
-        }
-      } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : 'Unknown error'
-
-        if (newContainer) {
-          try {
-            await newContainer.remove({ force: true })
-          } catch (cleanupError) {
-            logger.error('Failed to clean up replacement container after env update failure', {
-              containerId,
-              error: cleanupError instanceof Error ? cleanupError.message : 'Unknown error',
-            })
-          }
-        }
-
-        if (oldContainerRenamed) {
-          try {
-            await container.rename({ name: containerName })
-          } catch (revertError) {
-            logger.error('Failed to rename old container back after env update failure', {
-              containerId,
-              error: revertError instanceof Error ? revertError.message : 'Unknown error',
-            })
-          }
-        }
-
-        if (wasRunning) {
-          try {
-            await container.start()
-          } catch (restartError) {
-            logger.error('Failed to restart old container after env update failure', {
-              containerId,
-              error: restartError instanceof Error ? restartError.message : 'Unknown error',
-            })
-          }
-        }
-
-        logger.error('Failed to recreate container for env update', {
-          containerId,
-          error: errorMessage,
-          updatedVars,
-        })
-
-        return {
-          success: false,
-          containerId,
-          updatedVars,
-          restarted: false,
-          timestamp: new Date().toISOString(),
-          message: `Environment variables prepared (${updatedVars.join(', ')}) but not applied. Automatic recreation failed: ${errorMessage}. Manual intervention may be required.`,
-        }
+      templatePatch.metadata = {
+        annotations: {
+          'kubectl.kubernetes.io/restartedAt': new Date().toISOString(),
+        },
       }
     }
+
+    const patch: Record<string, unknown> = {
+      spec: {
+        template: templatePatch,
+      },
+    }
+
+    await patchDeployment(deploymentName, patch)
+
+    const restarted = hasChanges || restart
 
     return {
       success: true,
@@ -204,7 +122,9 @@ export async function updateEnvVars(
       updatedVars,
       restarted,
       timestamp: new Date().toISOString(),
-      message: `Environment variables prepared (${updatedVars.join(', ')}), but not applied yet. Re-run with restart=true or manually recreate/restart the container.`,
+      message: restarted
+        ? `Updated environment variables (${updatedVars.join(', ')}) and triggered deployment rollout`
+        : `Updated environment variables (${updatedVars.join(', ')})`,
     }
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error'

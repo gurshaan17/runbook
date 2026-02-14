@@ -1,9 +1,9 @@
-import { getDockerClient } from '../docker/client.js'
+import { V1Pod } from '@kubernetes/client-node'
 import { validateAction } from '../safety/validator.js'
 import { RestartContainerOutput } from '@runbook/shared-types'
+import { deleteDemoAppPods, listDemoAppPods } from '../k8s/client.js'
 import { logger } from '../utils/logger.js'
 
-const RESTART_TIMEOUT_SECONDS = Number(process.env.RESTART_TIMEOUT_SECONDS || 10)
 const RESTART_READY_TIMEOUT_MS = Number(process.env.RESTART_READY_TIMEOUT_MS || 15000)
 const RESTART_POLL_INTERVAL_MS = Number(process.env.RESTART_POLL_INTERVAL_MS || 500)
 
@@ -14,7 +14,6 @@ export async function restartContainer(
   try {
     logger.info('Attempting to restart container', { containerId, reason })
 
-    // Validate action
     const validation = await validateAction('restart', { containerId })
     if (!validation.allowed) {
       logger.warn('Restart action blocked by safety validator', {
@@ -33,57 +32,57 @@ export async function restartContainer(
       }
     }
 
-    const docker = getDockerClient()
-    const container = docker.getContainer(containerId)
+    const podsBeforeDelete = await listDemoAppPods()
+    const targetPods = selectTargetPods(podsBeforeDelete, containerId)
 
-    // Get container info before restart
-    const info = await container.inspect()
-    const containerName = info.Name.replace(/^\//, '')
-    const previousState = info.State.Status
-
-    logger.info('Container info retrieved', {
-      containerId,
-      containerName,
-      previousState,
-    })
-
-    // Bound restart call with Docker's timeout option.
-    await container.restart({ t: RESTART_TIMEOUT_SECONDS })
-
-    // Poll container state until it is running or timeout elapses.
-    const deadline = Date.now() + RESTART_READY_TIMEOUT_MS
-    let newInfo = await container.inspect()
-    while (
-      !(newInfo.State.Running || newInfo.State.Status === 'running') &&
-      Date.now() < deadline
-    ) {
-      await new Promise((resolve) => setTimeout(resolve, RESTART_POLL_INTERVAL_MS))
-      newInfo = await container.inspect()
+    if (targetPods.length === 0) {
+      throw new Error(`No demo-app pods found for containerId: ${containerId}`)
     }
 
-    if (!(newInfo.State.Running || newInfo.State.Status === 'running')) {
+    const previousState = targetPods[0].status?.phase || 'Unknown'
+    const previousPodNames = new Set<string>(
+      targetPods
+        .map((pod) => pod.metadata?.name)
+        .filter((podName): podName is string => Boolean(podName))
+    )
+    const fieldSelector = resolveFieldSelector(targetPods, containerId)
+
+    await deleteDemoAppPods(fieldSelector)
+
+    const deadline = Date.now() + RESTART_READY_TIMEOUT_MS
+    let latestPods = await listDemoAppPods()
+    let runningPod = findRunningReplacement(latestPods, previousPodNames)
+
+    while (!runningPod && Date.now() < deadline) {
+      await sleep(RESTART_POLL_INTERVAL_MS)
+      latestPods = await listDemoAppPods()
+      runningPod = findRunningReplacement(latestPods, previousPodNames)
+    }
+
+    if (!runningPod) {
       throw new Error(
-        `Container did not reach running state within ${RESTART_READY_TIMEOUT_MS}ms after restart`
+        `Pods did not reach running state within ${RESTART_READY_TIMEOUT_MS}ms after restart`
       )
     }
 
-    const newState = newInfo.State.Status
+    const newState = runningPod.status?.phase || 'Running'
+    const newContainerId = runningPod.metadata?.name || containerId
 
     logger.info('Container restarted successfully', {
       containerId,
-      containerName,
+      newContainerId,
       previousState,
       newState,
     })
 
     return {
       success: true,
-      containerId,
-      containerName,
+      containerId: newContainerId,
+      containerName: 'demo-app',
       previousState,
       newState,
       timestamp: new Date().toISOString(),
-      message: `Container ${containerName} restarted successfully. Previous state: ${previousState}, New state: ${newState}`,
+      message: `Restarted demo-app pod(s). Previous state: ${previousState}, New state: ${newState}`,
     }
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error'
@@ -99,4 +98,54 @@ export async function restartContainer(
       message: `Failed to restart container: ${errorMessage}`,
     }
   }
+}
+
+function selectTargetPods(pods: V1Pod[], containerId: string): V1Pod[] {
+  if (containerId === 'demo-app') {
+    return pods
+  }
+
+  const exact = pods.filter((pod) => pod.metadata?.name === containerId)
+  if (exact.length > 0) {
+    return exact
+  }
+
+  const partial = pods.filter((pod) => (pod.metadata?.name || '').includes(containerId))
+  if (partial.length > 0) {
+    return partial
+  }
+
+  return pods
+}
+
+function resolveFieldSelector(targetPods: V1Pod[], containerId: string): string | undefined {
+  if (containerId === 'demo-app') {
+    return undefined
+  }
+
+  if (targetPods.length === 1) {
+    const podName = targetPods[0].metadata?.name
+    if (podName) {
+      return `metadata.name=${podName}`
+    }
+  }
+
+  return undefined
+}
+
+function findRunningReplacement(pods: V1Pod[], previousPodNames: Set<string>): V1Pod | undefined {
+  const newRunning = pods.find((pod) => {
+    const podName = pod.metadata?.name || ''
+    return !previousPodNames.has(podName) && pod.status?.phase === 'Running'
+  })
+
+  if (newRunning) {
+    return newRunning
+  }
+
+  return pods.find((pod) => pod.status?.phase === 'Running')
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
 }
