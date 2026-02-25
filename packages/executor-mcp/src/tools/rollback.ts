@@ -1,6 +1,11 @@
-import { getDockerClient } from '../docker/client.js'
 import { validateAction } from '../safety/validator.js'
 import { RollbackDeploymentOutput } from '@runbook/shared-types'
+import {
+  DEMO_APP_DEPLOYMENT_NAME,
+  listDemoAppReplicaSets,
+  patchDeployment,
+  readDeployment,
+} from '../k8s/client.js'
 import { logger } from '../utils/logger.js'
 
 export async function rollbackDeployment(
@@ -10,7 +15,6 @@ export async function rollbackDeployment(
   try {
     logger.info('Attempting to rollback deployment', { serviceName, reason })
 
-    // Validate action
     const validation = await validateAction('rollback', { serviceName })
     if (!validation.allowed) {
       logger.warn('Rollback action blocked by safety validator', {
@@ -28,38 +32,80 @@ export async function rollbackDeployment(
       }
     }
 
-    const docker = getDockerClient()
+    const deploymentName = serviceName || DEMO_APP_DEPLOYMENT_NAME
+    const deployment = await readDeployment(deploymentName)
+    const currentContainer = deployment.spec?.template?.spec?.containers?.[0]
 
-    // Find containers for this service
-    const containers = await docker.listContainers({ all: true })
-    const serviceContainers = containers.filter((c) =>
-      c.Names.some((name) => name.includes(serviceName))
-    )
-
-    if (serviceContainers.length === 0) {
-      throw new Error(`No containers found for service: ${serviceName}`)
+    if (!currentContainer?.name || !currentContainer.image) {
+      throw new Error(`Deployment ${deploymentName} does not contain a rollback target image`)
     }
 
-    // Get current image
-    const currentImage = serviceContainers[0].Image
+    const imageBeforeRollback = currentContainer.image
+    const replicaSets = await listDemoAppReplicaSets()
+    const ownedReplicaSets = replicaSets
+      .filter((replicaSet) =>
+        (replicaSet.metadata?.ownerReferences || []).some(
+          (owner) => owner.kind === 'Deployment' && owner.name === deploymentName
+        )
+      )
+      .map((replicaSet) => {
+        const revision = Number.parseInt(
+          replicaSet.metadata?.annotations?.['deployment.kubernetes.io/revision'] || '0',
+          10
+        )
+        const image = replicaSet.spec?.template?.spec?.containers?.[0]?.image || ''
 
-    logger.info('Current service image', { serviceName, currentImage })
+        return {
+          revision: Number.isFinite(revision) ? revision : 0,
+          image,
+        }
+      })
+      .sort((a, b) => b.revision - a.revision)
 
-    // For a real rollback, we'd need to:
-    // 1. Keep track of previous image versions (in a database or file)
-    // 2. Pull the previous image
-    // 3. Recreate containers with previous image
+    const rollbackTarget = ownedReplicaSets.find(
+      (candidate) => candidate.image && candidate.image !== imageBeforeRollback
+    )
 
-    // For this demo, we'll simulate by noting the current image
-    // In production, you'd integrate with docker-compose or kubernetes
+    if (!rollbackTarget?.image) {
+      return {
+        success: false,
+        serviceName,
+        previousImage: imageBeforeRollback,
+        currentImage: imageBeforeRollback,
+        timestamp: new Date().toISOString(),
+        message:
+          'No previous deployment revision image found to rollback to. Ensure at least one prior rollout exists.',
+      }
+    }
+
+    await patchDeployment(deploymentName, {
+      spec: {
+        template: {
+          spec: {
+            containers: [
+              {
+                name: currentContainer.name,
+                image: rollbackTarget.image,
+              },
+            ],
+          },
+        },
+      },
+    })
+
+    logger.info('Deployment rolled back successfully', {
+      deploymentName,
+      fromImage: imageBeforeRollback,
+      toImage: rollbackTarget.image,
+    })
 
     return {
-      success: false,
+      success: true,
       serviceName,
-      previousImage: 'unknown',
-      currentImage,
+      previousImage: imageBeforeRollback,
+      currentImage: rollbackTarget.image,
       timestamp: new Date().toISOString(),
-      message: `Rollback not fully implemented. Current image: ${currentImage}. In production, this would pull and deploy the previous image version. Use docker-compose or kubernetes for proper rollback support.`,
+      message: `Rolled back ${serviceName} from ${imageBeforeRollback} to ${rollbackTarget.image}`,
     }
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error'
